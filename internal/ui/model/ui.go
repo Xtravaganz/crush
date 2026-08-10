@@ -137,6 +137,7 @@ type (
 	// userCommandsLoadedMsg is sent when user commands are loaded.
 	userCommandsLoadedMsg struct {
 		Commands []commands.CustomCommand
+		Skills   []skills.CatalogEntry
 	}
 	// mcpPromptsLoadedMsg is sent when mcp prompts are loaded.
 	mcpPromptsLoadedMsg struct {
@@ -292,7 +293,10 @@ type UI struct {
 	mcpStates map[string]mcp.ClientInfo
 
 	// skills
-	skillStates []*skills.SkillState
+	skillStates     []*skills.SkillState
+	cyclableSkills  []skills.CatalogEntry
+	activeSkillID   string
+	activeSkillName string
 
 	// sidebarLogo keeps a cached version of the sidebar sidebarLogo.
 	sidebarLogo string
@@ -670,7 +674,7 @@ func (m *UI) loadCustomCommands() tea.Cmd {
 			slog.Error("Failed to load skill commands", "error", err)
 		}
 		customCommands = append(customCommands, commands.FromSkillCatalog(skillEntries)...)
-		return userCommandsLoadedMsg{Commands: customCommands}
+		return userCommandsLoadedMsg{Commands: customCommands, Skills: skillEntries}
 	}
 }
 
@@ -805,6 +809,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case userCommandsLoadedMsg:
 		m.customCommands = msg.Commands
+		m.setCyclableSkills(msg.Skills)
 		dia := m.dialog.Dialog(dialog.CommandsID)
 		if dia == nil {
 			break
@@ -2388,7 +2393,7 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 	// Tab always toggles focus between editor and chat, even when
 	// an inline editor is active. This lets users collapse the
 	// question form to view chat.
-	if m.activeInline != nil && key.Matches(msg, m.keyMap.Tab) {
+	if m.activeInline != nil && (key.Matches(msg, m.keyMap.Tab) || key.Matches(msg, m.keyMap.FocusNext)) {
 		if m.focus == uiFocusEditor {
 			m.focus = uiFocusMain
 			m.activeInline.SetFocused(false)
@@ -2519,7 +2524,15 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				m.randomizePlaceholders()
 				m.historyReset()
 
-				return tea.Batch(m.sendMessage(value, attachments...), m.loadPromptHistory())
+				return tea.Batch(m.sendMessageWithActiveSkill(value, attachments...), m.loadPromptHistory())
+			case len(m.cyclableSkills) > 0 && key.Matches(msg, m.keyMap.SkillNext):
+				if cmd := m.cycleActiveSkill(1); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			case len(m.cyclableSkills) > 0 && key.Matches(msg, m.keyMap.SkillPrev):
+				if cmd := m.cycleActiveSkill(-1); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 			case key.Matches(msg, m.keyMap.Chat.NewSession):
 				if !m.hasSession() {
 					break
@@ -2531,7 +2544,7 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				if cmd := m.newSession(); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
-			case key.Matches(msg, m.keyMap.Tab):
+			case key.Matches(msg, m.keyMap.Tab) || key.Matches(msg, m.keyMap.FocusNext):
 				if m.state != uiLanding {
 					m.setState(m.state, uiFocusMain)
 					m.textarea.Blur()
@@ -2668,7 +2681,15 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			}
 		case uiFocusMain:
 			switch {
-			case key.Matches(msg, m.keyMap.Tab):
+			case len(m.cyclableSkills) > 0 && key.Matches(msg, m.keyMap.SkillNext):
+				if cmd := m.cycleActiveSkill(1); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			case len(m.cyclableSkills) > 0 && key.Matches(msg, m.keyMap.SkillPrev):
+				if cmd := m.cycleActiveSkill(-1); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			case key.Matches(msg, m.keyMap.Tab) || key.Matches(msg, m.keyMap.FocusNext):
 				m.focus = uiFocusEditor
 				m.sidebarScrollbarVisible = false
 				cmds = append(cmds, m.textarea.Focus())
@@ -2764,6 +2785,14 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				break
 			}
 			switch {
+			case len(m.cyclableSkills) > 0 && key.Matches(msg, m.keyMap.SkillNext):
+				if cmd := m.cycleActiveSkill(1); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			case len(m.cyclableSkills) > 0 && key.Matches(msg, m.keyMap.SkillPrev):
+				if cmd := m.cycleActiveSkill(-1); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 			case key.Matches(msg, m.keyMap.Chat.Up):
 				m.sidebarOffset = max(0, m.sidebarOffset-4)
 				m.sidebarScrollbarSeq++
@@ -2783,7 +2812,7 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				m.focus = uiFocusMain
 				m.sidebarScrollbarVisible = false
 				m.chat.Focus()
-			case key.Matches(msg, m.keyMap.Tab):
+			case key.Matches(msg, m.keyMap.Tab) || key.Matches(msg, m.keyMap.FocusNext):
 				m.focus = uiFocusEditor
 				m.sidebarScrollbarVisible = false
 				cmds = append(cmds, m.textarea.Focus())
@@ -3031,6 +3060,9 @@ func (m *UI) ShortHelp() []key.Binding {
 	}
 
 	tab := k.Tab
+	focusNext := k.FocusNext
+	skillSwitch := k.SkillNext
+	skillSwitch.SetHelp("tab/shift+tab", "switch skill")
 	commands := k.Commands
 	if m.focus == uiFocusEditor && m.textarea.Value() == "" {
 		commands.SetHelp("/ or ctrl+p", "commands")
@@ -3054,16 +3086,17 @@ func (m *UI) ShortHelp() []key.Binding {
 		switch m.focus {
 		case uiFocusEditor:
 			tab.SetHelp("tab", "focus chat")
+			focusNext.SetHelp("ctrl+tab", "focus chat")
 		default:
 			tab.SetHelp("tab", "focus editor")
+			focusNext.SetHelp("ctrl+tab", "focus editor")
 		}
 
-		binds = append(
-			binds,
-			tab,
-			commands,
-			k.Models,
-		)
+		if len(m.cyclableSkills) > 0 {
+			binds = append(binds, skillSwitch, focusNext, commands, k.Models)
+		} else {
+			binds = append(binds, tab, commands, k.Models)
+		}
 
 		switch m.focus {
 		case uiFocusEditor:
@@ -3094,6 +3127,9 @@ func (m *UI) ShortHelp() []key.Binding {
 		// TODO: other states
 		// if m.session == nil {
 		// no session selected
+		if len(m.cyclableSkills) > 0 {
+			binds = append(binds, skillSwitch)
+		}
 		binds = append(
 			binds,
 			commands,
@@ -3149,16 +3185,23 @@ func (m *UI) FullHelp() [][]key.Binding {
 
 		mainBinds := []key.Binding{}
 		tab := k.Tab
+		focusNext := k.FocusNext
 		switch m.focus {
 		case uiFocusEditor:
 			tab.SetHelp("tab", "focus chat")
+			focusNext.SetHelp("ctrl+tab", "focus chat")
 		default:
 			tab.SetHelp("tab", "focus editor")
+			focusNext.SetHelp("ctrl+tab", "focus editor")
 		}
 
+		if len(m.cyclableSkills) > 0 {
+			mainBinds = append(mainBinds, k.SkillNext, k.SkillPrev, focusNext)
+		} else {
+			mainBinds = append(mainBinds, tab)
+		}
 		mainBinds = append(
 			mainBinds,
-			tab,
 			commands,
 			k.Models,
 			k.Sessions,
@@ -3233,15 +3276,12 @@ func (m *UI) FullHelp() [][]key.Binding {
 	default:
 		if m.session == nil {
 			// no session selected
-			binds = append(
-				binds,
-				[]key.Binding{
-					commands,
-					k.Models,
-					k.Sessions,
-					k.ToggleYolo,
-				},
-			)
+			mainBinds := []key.Binding{}
+			if len(m.cyclableSkills) > 0 {
+				mainBinds = append(mainBinds, k.SkillNext, k.SkillPrev)
+			}
+			mainBinds = append(mainBinds, commands, k.Models, k.Sessions, k.ToggleYolo)
+			binds = append(binds, mainBinds)
 			editorBinds := []key.Binding{
 				k.Editor.Newline,
 				k.Editor.MentionFile,
@@ -3998,6 +4038,36 @@ func (m *UI) attachSkill(skillID, name string) tea.Cmd {
 			MimeType: "text/markdown",
 			Content:  content,
 		}
+	}
+}
+
+// sendMessageWithActiveSkill attaches the currently selected project skill
+// to a user-authored prompt. The selected skill is persistent UI state, so it
+// is re-read and attached for every submitted prompt until the user changes it.
+func (m *UI) sendMessageWithActiveSkill(content string, attachments ...message.Attachment) tea.Cmd {
+	skillID := m.activeSkillID
+	skillName := m.activeSkillName
+	if skillID == "" {
+		return m.sendMessage(content, attachments...)
+	}
+
+	baseAttachments := slices.Clone(attachments)
+	return func() tea.Msg {
+		skillContent, result, err := m.com.Workspace.ReadSkill(context.Background(), skillID)
+		if err != nil {
+			return util.NewErrorMsg(err)
+		}
+		fileName := result.Name
+		if fileName == "" {
+			fileName = skillName
+		}
+		baseAttachments = append(baseAttachments, message.Attachment{
+			FilePath: fileName,
+			FileName: fileName,
+			MimeType: "text/markdown",
+			Content:  skillContent,
+		})
+		return sendMessageMsg{Content: content, Attachments: baseAttachments}
 	}
 }
 

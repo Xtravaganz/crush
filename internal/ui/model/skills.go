@@ -7,10 +7,12 @@ import (
 	"strings"
 	"sync"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/skills"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/styles"
+	"github.com/charmbracelet/crush/internal/ui/util"
 )
 
 type skillStatusItem struct {
@@ -53,6 +55,85 @@ func (m *UI) skillsInfo(width, maxItems int, isSection bool) string {
 	return lipgloss.NewStyle().Width(width).Render(fmt.Sprintf("%s\n\n%s", title, list))
 }
 
+func (m *UI) setCyclableSkills(entries []skills.CatalogEntry) {
+	m.cyclableSkills = m.cyclableSkills[:0]
+	for _, entry := range entries {
+		if entry.Source != skills.SourceProject || !entry.UserInvocable || strings.EqualFold(entry.Name, "sync") {
+			continue
+		}
+		m.cyclableSkills = append(m.cyclableSkills, entry)
+	}
+	skillOrder := map[string]int{
+		"issue":   0,
+		"code":    1,
+		"tests":   2,
+		"review":  3,
+		"docs":    4,
+		"context": 5,
+	}
+
+	slices.SortStableFunc(m.cyclableSkills, func(a, b skills.CatalogEntry) int {
+		aOrder, aKnown := skillOrder[strings.ToLower(a.Name)]
+		bOrder, bKnown := skillOrder[strings.ToLower(b.Name)]
+
+		switch {
+		case aKnown && bKnown:
+			if aOrder < bOrder {
+				return -1
+			}
+			if aOrder > bOrder {
+				return 1
+			}
+			return 0
+
+		case aKnown:
+			return -1
+
+		case bKnown:
+			return 1
+
+		default:
+			return strings.Compare(
+				strings.ToLower(a.Label),
+				strings.ToLower(b.Label),
+			)
+		}
+	})
+	if m.activeSkillID == "" {
+		return
+	}
+	if !slices.ContainsFunc(m.cyclableSkills, func(entry skills.CatalogEntry) bool {
+		return entry.ID == m.activeSkillID
+	}) {
+		m.activeSkillID = ""
+		m.activeSkillName = ""
+	}
+}
+
+func (m *UI) cycleActiveSkill(delta int) tea.Cmd {
+	if len(m.cyclableSkills) == 0 {
+		return nil
+	}
+
+	idx := slices.IndexFunc(m.cyclableSkills, func(entry skills.CatalogEntry) bool {
+		return entry.ID == m.activeSkillID
+	})
+	if idx < 0 {
+		if delta < 0 {
+			idx = 0
+		} else {
+			idx = -1
+		}
+	}
+	idx = (idx + delta + len(m.cyclableSkills)) % len(m.cyclableSkills)
+	selected := m.cyclableSkills[idx]
+	m.activeSkillID = selected.ID
+	m.activeSkillName = selected.Name
+	m.updateLayoutAndSize()
+
+	return util.ReportInfo("Active skill: " + selected.Label)
+}
+
 func (m *UI) skillStatusItems() []skillStatusItem {
 	t := m.com.Styles
 	var items []skillStatusItem
@@ -87,10 +168,14 @@ func (m *UI) skillStatusItems() []skillStatusItem {
 		if state.State == skills.StateError {
 			icon = t.Resource.ErrorIcon.String()
 		}
+		displayName := name
+		if state.Path == m.activeSkillID {
+			displayName = "▶ " + name
+		}
 		items = append(items, skillStatusItem{
 			icon:  icon,
 			name:  name,
-			title: t.Resource.Name.Render(name),
+			title: t.Resource.Name.Render(displayName),
 		})
 	}
 

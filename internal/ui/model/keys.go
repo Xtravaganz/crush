@@ -67,6 +67,9 @@ type KeyMap struct {
 	Suspend    key.Binding
 	Sessions   key.Binding
 	Tab        key.Binding
+	FocusNext  key.Binding
+	SkillNext  key.Binding
+	SkillPrev  key.Binding
 	ToggleYolo key.Binding
 }
 
@@ -99,6 +102,18 @@ func DefaultKeyMap() KeyMap {
 		Tab: key.NewBinding(
 			key.WithKeys("tab"),
 			key.WithHelp("tab", "change focus"),
+		),
+		FocusNext: key.NewBinding(
+			key.WithKeys("ctrl+tab"),
+			key.WithHelp("ctrl+tab", "change focus"),
+		),
+		SkillNext: key.NewBinding(
+			key.WithKeys("tab"),
+			key.WithHelp("tab", "next skill"),
+		),
+		SkillPrev: key.NewBinding(
+			key.WithKeys("shift+tab"),
+			key.WithHelp("shift+tab", "previous skill"),
 		),
 		ToggleYolo: key.NewBinding(
 			key.WithKeys("ctrl+y"),
