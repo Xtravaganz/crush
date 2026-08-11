@@ -59,6 +59,7 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/crush/internal/ui/util"
 	"github.com/charmbracelet/crush/internal/version"
+	"github.com/charmbracelet/crush/internal/workflow"
 	"github.com/charmbracelet/crush/internal/workspace"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/ultraviolet/layout"
@@ -4067,6 +4068,28 @@ func (m *UI) sendMessageWithActiveSkill(content string, attachments ...message.A
 			MimeType: "text/markdown",
 			Content:  skillContent,
 		})
+
+		parsedSkill, err := skills.ParseContent(skillContent)
+		if err != nil {
+			return util.NewErrorMsg(fmt.Errorf("parse active skill context policy: %w", err))
+		}
+		workerName := parsedSkill.Name
+		if workerName == "" {
+			workerName = skillName
+		}
+		resolved, ok, err := workflow.ResolveActive(m.com.Workspace.WorkingDir(), workerName, parsedSkill.Context)
+		if err != nil {
+			return util.NewErrorMsg(err)
+		}
+		if ok {
+			baseAttachments = append(baseAttachments, message.Attachment{
+				FilePath: resolved.RelativePath,
+				FileName: "workflow-context.yaml",
+				MimeType: "text/yaml",
+				Content:  resolved.Content,
+			})
+		}
+
 		return sendMessageMsg{Content: content, Attachments: baseAttachments}
 	}
 }
