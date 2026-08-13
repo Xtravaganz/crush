@@ -109,8 +109,18 @@ func (s *Manager) Start(ctx context.Context, path string) {
 		return
 	}
 
+	// JavaScript/TypeScript projects need a little more than a static LSP
+	// catalog entry: the correct server depends on the repository's installed
+	// TypeScript version and, for embedded-language frameworks such as Svelte,
+	// on framework compatibility. Resolve those projects before falling back to
+	// the bundled powernap catalog.
+	projectLSPHandled := s.startProjectLSP(path)
+
 	var wg sync.WaitGroup
 	for name, server := range s.manager.GetServers() {
+		if projectLSPHandled && !s.isUserConfigured(name) && isJavaScriptServer(server.Command) {
+			continue
+		}
 		wg.Go(func() {
 			s.startServer(name, path, server)
 		})
@@ -182,6 +192,47 @@ func (s *Manager) startServer(name, filepath string, server *powernapconfig.Serv
 		return
 	}
 
+	s.startClient(name, cfg, s.cfg.WorkingDir())
+}
+
+func (s *Manager) startProjectLSP(filePath string) bool {
+	autoLSP := s.cfg.Config().Options.AutoLSP
+	if autoLSP != nil && !*autoLSP {
+		return false
+	}
+	kind := javaScriptFileKind(filePath)
+	if kind == "" {
+		return false
+	}
+
+	// An explicit user configuration always wins over automatic repository
+	// discovery, including an explicit disabled entry.
+	if projectLSPUserOverride(s.cfg.Config().LSP, kind) {
+		return false
+	}
+
+	resolved, handled := resolveJavaScriptProjectLSP(filePath, s.cfg.WorkingDir(), s.lookPath)
+	if !handled {
+		return false
+	}
+	if resolved == nil {
+		return true
+	}
+
+	name := projectClientName(resolved.Name, resolved.Root, s.cfg.WorkingDir())
+	slog.Debug(
+		"Resolved project LSP",
+		"name", name,
+		"root", resolved.Root,
+		"command", resolved.Config.Command,
+		"args", resolved.Config.Args,
+		"reason", resolved.Reason,
+	)
+	s.startClient(name, resolved.Config, resolved.Root)
+	return true
+}
+
+func (s *Manager) startClient(name string, cfg config.LSPConfig, root string) {
 	// Check again in case another goroutine started it in the meantime.
 	if client, ok := s.clients.Get(name); ok {
 		switch client.GetServerState() {
@@ -195,11 +246,11 @@ func (s *Manager) startServer(name, filepath string, server *powernapconfig.Serv
 		name,
 		cfg,
 		s.cfg.Resolver(),
-		s.cfg.WorkingDir(),
+		root,
 		s.cfg.Config().Options.DebugLSP,
 	)
 	if err != nil {
-		slog.Error("Failed to create LSP client", "name", name, "error", err)
+		slog.Error("Failed to create LSP client", "name", name, "root", root, "error", err)
 		return
 	}
 	// Only store non-nil clients. If another goroutine raced us,
@@ -219,7 +270,6 @@ func (s *Manager) startServer(name, filepath string, server *powernapconfig.Serv
 
 	switch client.GetServerState() {
 	case StateReady, StateStarting, StateDisabled:
-		// already done, return
 		return
 	}
 
@@ -233,21 +283,21 @@ func (s *Manager) startServer(name, filepath string, server *powernapconfig.Serv
 	initCtx, cancel := context.WithTimeout(context.Background(), time.Duration(cmp.Or(cfg.Timeout, 30))*time.Second)
 	defer cancel()
 
-	if _, err := client.Initialize(initCtx, s.cfg.WorkingDir()); err != nil {
-		slog.Error("LSP client initialization failed", "name", name, "error", err)
+	if _, err := client.Initialize(initCtx, root); err != nil {
+		slog.Error("LSP client initialization failed", "name", name, "root", root, "error", err)
 		client.Shutdown()
 		s.clients.Del(name)
 		return
 	}
 
 	if err := client.WaitForServerReady(initCtx); err != nil {
-		slog.Warn("LSP server not fully ready, continuing anyway", "name", name, "error", err)
+		slog.Warn("LSP server not fully ready, continuing anyway", "name", name, "root", root, "error", err)
 		client.SetServerState(StateError)
 	} else {
 		client.SetServerState(StateReady)
 	}
 
-	slog.Debug("LSP client started", "name", name)
+	slog.Debug("LSP client started", "name", name, "root", root)
 }
 
 func (s *Manager) canAutoStart(

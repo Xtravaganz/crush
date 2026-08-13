@@ -4108,6 +4108,27 @@ func (m *UI) sendMessageWithActiveSkill(content string, attachments ...message.A
 	}
 }
 
+// createInteractiveSession creates a user-started session and, when a
+// workflow skill is active, rebinds that worker to the new session. Crush's
+// "New Session" action only clears UI state; the actual session is created on
+// the first prompt, so the workflow mapping must be updated here rather than
+// when the action is triggered.
+func (m *UI) createInteractiveSession(ctx context.Context, title string) (session.Session, error) {
+	sess, err := m.com.Workspace.CreateSession(ctx, title)
+	if err != nil {
+		return session.Session{}, err
+	}
+
+	worker := strings.TrimSpace(m.activeSkillName)
+	if worker == "" || strings.TrimSpace(sess.ID) == "" {
+		return sess, nil
+	}
+	if err := workflow.SetWorkerSession(m.com.Workspace.WorkingDir(), worker, sess.ID); err != nil {
+		return session.Session{}, fmt.Errorf("bind new session to workflow worker %q: %w", worker, err)
+	}
+	return sess, nil
+}
+
 // sendMessage sends a message with the given content and attachments.
 func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.Cmd {
 	if err := m.com.Workspace.AgentReadyErr(); err != nil {
@@ -4119,7 +4140,7 @@ func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.
 
 	var cmds []tea.Cmd
 	if !m.hasSession() {
-		newSession, err := m.com.Workspace.CreateSession(context.Background(), "New Session")
+		newSession, err := m.createInteractiveSession(context.Background(), "New Session")
 		if err != nil {
 			return util.ReportError(err)
 		}
@@ -4182,7 +4203,7 @@ func (m *UI) runShellCommand(command string) tea.Cmd {
 func (m *UI) runShellCommandInternal(command string, isFirstMessage bool) tea.Cmd {
 	var cmds []tea.Cmd
 	if !m.hasSession() {
-		newSession, err := m.com.Workspace.CreateSession(context.Background(), "New Session")
+		newSession, err := m.createInteractiveSession(context.Background(), "New Session")
 		if err != nil {
 			return util.ReportError(err)
 		}
