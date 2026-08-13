@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -13,14 +14,22 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/crush/internal/ui/util"
+	"github.com/charmbracelet/crush/internal/workflow"
 )
 
 type skillStatusItem struct {
 	icon  string
 	name  string
 	title string
+	order *int
 	// description is reserved for future use (e.g. showing error details).
 	description string
+}
+
+type workflowSkillActivatedMsg struct {
+	entry     skills.CatalogEntry
+	sessionID string
+	restored  bool
 }
 
 var builtinSkillsCache struct {
@@ -55,50 +64,40 @@ func (m *UI) skillsInfo(width, maxItems int, isSection bool) string {
 	return lipgloss.NewStyle().Width(width).Render(fmt.Sprintf("%s\n\n%s", title, list))
 }
 
+func compareWorkflowOrder(aOrder, bOrder *int, aName, bName string) int {
+	switch {
+	case aOrder != nil && bOrder != nil:
+		if *aOrder != *bOrder {
+			return *aOrder - *bOrder
+		}
+	case aOrder != nil:
+		return -1
+	case bOrder != nil:
+		return 1
+	}
+	return strings.Compare(strings.ToLower(aName), strings.ToLower(bName))
+}
+
+func compareWorkflowSkillEntries(a, b skills.CatalogEntry) int {
+	return compareWorkflowOrder(a.WorkflowOrder, b.WorkflowOrder, a.Name, b.Name)
+}
+
+func compareSkillStatusItems(a, b skillStatusItem) int {
+	return compareWorkflowOrder(a.order, b.order, a.name, b.name)
+}
+
 func (m *UI) setCyclableSkills(entries []skills.CatalogEntry) {
 	m.cyclableSkills = m.cyclableSkills[:0]
 	for _, entry := range entries {
-		if entry.Source != skills.SourceProject || !entry.UserInvocable || strings.EqualFold(entry.Name, "sync") {
+		// workflow-order opts a normal user/project skill into the Tab cycle
+		// and defines its position without adding skill names to Go code.
+		if entry.Source == skills.SourceSystem || !entry.UserInvocable || entry.WorkflowOrder == nil {
 			continue
 		}
 		m.cyclableSkills = append(m.cyclableSkills, entry)
 	}
-	skillOrder := map[string]int{
-		"issue":   0,
-		"code":    1,
-		"tests":   2,
-		"review":  3,
-		"docs":    4,
-		"context": 5,
-	}
+	slices.SortStableFunc(m.cyclableSkills, compareWorkflowSkillEntries)
 
-	slices.SortStableFunc(m.cyclableSkills, func(a, b skills.CatalogEntry) int {
-		aOrder, aKnown := skillOrder[strings.ToLower(a.Name)]
-		bOrder, bKnown := skillOrder[strings.ToLower(b.Name)]
-
-		switch {
-		case aKnown && bKnown:
-			if aOrder < bOrder {
-				return -1
-			}
-			if aOrder > bOrder {
-				return 1
-			}
-			return 0
-
-		case aKnown:
-			return -1
-
-		case bKnown:
-			return 1
-
-		default:
-			return strings.Compare(
-				strings.ToLower(a.Label),
-				strings.ToLower(b.Label),
-			)
-		}
-	})
 	if m.activeSkillID == "" {
 		return
 	}
@@ -126,17 +125,86 @@ func (m *UI) cycleActiveSkill(delta int) tea.Cmd {
 		}
 	}
 	idx = (idx + delta + len(m.cyclableSkills)) % len(m.cyclableSkills)
-	selected := m.cyclableSkills[idx]
-	m.activeSkillID = selected.ID
-	m.activeSkillName = selected.Name
-	m.updateLayoutAndSize()
+	return m.activateWorkflowSkill(m.cyclableSkills[idx], false)
+}
 
-	return util.ReportInfo("Active skill: " + selected.Label)
+func (m *UI) restoreWorkflowSkill() tea.Cmd {
+	if len(m.cyclableSkills) == 0 || m.initialSessionID != "" || m.continueLastSession {
+		return nil
+	}
+
+	root := m.com.Workspace.WorkingDir()
+	return func() tea.Msg {
+		if _, _, err := workflow.EnsureLocalContext(context.Background(), root); err != nil {
+			return util.NewErrorMsg(err)
+		}
+
+		state, ok, err := workflow.LoadActiveState(root)
+		if err != nil {
+			return util.NewErrorMsg(err)
+		}
+		if !ok || state.ActiveSkill == "" {
+			return nil
+		}
+
+		idx := slices.IndexFunc(m.cyclableSkills, func(entry skills.CatalogEntry) bool {
+			return strings.EqualFold(entry.Name, state.ActiveSkill)
+		})
+		if idx < 0 {
+			return nil
+		}
+		return m.resolveWorkflowSkillActivation(m.cyclableSkills[idx], true)
+	}
+}
+
+func (m *UI) activateWorkflowSkill(entry skills.CatalogEntry, restored bool) tea.Cmd {
+	return func() tea.Msg {
+		return m.resolveWorkflowSkillActivation(entry, restored)
+	}
+}
+
+func (m *UI) resolveWorkflowSkillActivation(entry skills.CatalogEntry, restored bool) tea.Msg {
+	root := m.com.Workspace.WorkingDir()
+	state, ok, err := workflow.LoadActiveState(root)
+	if err != nil {
+		return util.NewErrorMsg(err)
+	}
+	if !ok {
+		// Skills are still useful without an active workflow (for example
+		// outside Git), so preserve Crush's normal single-session behavior.
+		return workflowSkillActivatedMsg{entry: entry, restored: restored}
+	}
+
+	ctx := context.Background()
+	sessionID := state.WorkerSessions[entry.Name]
+	if sessionID != "" {
+		if _, err := m.com.Workspace.GetSession(ctx, sessionID); err != nil {
+			sessionID = ""
+		}
+	}
+	if sessionID == "" {
+		sess, err := m.com.Workspace.CreateSession(ctx, "Workflow · "+entry.Name)
+		if err != nil {
+			return util.NewErrorMsg(err)
+		}
+		sessionID = sess.ID
+	}
+
+	if err := workflow.SetWorkerSession(root, entry.Name, sessionID); err != nil {
+		return util.NewErrorMsg(err)
+	}
+	return workflowSkillActivatedMsg{entry: entry, sessionID: sessionID, restored: restored}
 }
 
 func (m *UI) skillStatusItems() []skillStatusItem {
 	t := m.com.Styles
 	var items []skillStatusItem
+
+	orderByName := make(map[string]*int, len(m.cyclableSkills))
+	for _, entry := range m.cyclableSkills {
+		orderByName[strings.ToLower(entry.Name)] = entry.WorkflowOrder
+	}
+
 	stateNames := make(map[string]struct{}, len(m.skillStates))
 
 	disabledSet := make(map[string]bool)
@@ -176,6 +244,7 @@ func (m *UI) skillStatusItems() []skillStatusItem {
 			icon:  icon,
 			name:  name,
 			title: t.Resource.Name.Render(displayName),
+			order: orderByName[strings.ToLower(name)],
 		})
 	}
 
@@ -197,9 +266,7 @@ func (m *UI) skillStatusItems() []skillStatusItem {
 		})
 	}
 
-	slices.SortStableFunc(items, func(a, b skillStatusItem) int {
-		return strings.Compare(a.name, b.name)
-	})
+	slices.SortStableFunc(items, compareSkillStatusItems)
 
 	return items
 }

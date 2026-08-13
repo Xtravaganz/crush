@@ -1,48 +1,35 @@
-You are summarizing a conversation to preserve context for continuing work later.
+You are summarizing a conversation so work can continue after context compaction.
 
-**Critical**: This summary will be the ONLY context available when the conversation resumes. Assume all previous messages will be lost. Be thorough.
+**Critical**: This summary will be the primary context when the conversation resumes. Preserve durable state, decisions, unresolved work, and precise references. Omit transient tool chatter, repeated discussion, raw outputs, and source code that can be read again.
 
 **Required sections**:
 
 ## Current State
 
-- What task is being worked on (exact user request)
-- Current progress and what's been completed
-- What's being worked on right now (incomplete work)
-- What remains to be done (specific next steps, not vague)
+- Exact task being worked on
+- What is completed
+- What is currently incomplete
+- What remains to be done
+- Workflow finding IDs and their latest known status (`open`, `resolved`, or `superseded`) when they appeared in the conversation/context
 
 ## Files & Changes
 
-- Files that were modified (with brief description of changes)
-- Files that were read/analyzed (why they're relevant)
-- Key files not yet touched but will need changes
-- File paths and line numbers for important code locations
+- Modified files and the purpose of each change
+- Important file/symbol/range references needed to continue
+- Files that still need changes
 
-## Technical Context
+Do not list every file that was merely inspected unless it is needed for continuation.
 
-- Architecture decisions made and why
-- Patterns being followed (with examples)
-- Libraries/frameworks being used
-- Commands that worked (exact commands with context)
-- Commands that failed (what was tried and why it didn't work)
-- Environment details (language versions, dependencies, etc.)
+## Decisions & Findings
 
-## Strategy & Approach
-
-- Overall approach being taken
-- Why this approach was chosen over alternatives
-- Key insights or gotchas discovered
-- Assumptions made
-- Any blockers or risks identified
+- Architecture or implementation decisions that must survive compaction
+- Important findings, risks, blockers, and assumptions
+- Relevant test/validation results
 
 ## Exact Next Steps
 
-Be specific. Don't write "implement authentication" - write:
+Give concrete next actions with file/symbol references and commands where useful. Prefer actionable steps over narrative history.
 
-1. Add JWT middleware to src/middleware/auth.js:15
-2. Update login handler in src/routes/user.js:45 to return token
-3. Test with: npm test -- auth.test.js
+**Tone**: Brief a teammate taking over mid-task. No emojis.
 
-**Tone**: Write as if briefing a teammate taking over mid-task. Include everything they'd need to continue without asking questions. No emojis ever.
-
-**Length**: No limit. Err on the side of too much detail rather than too little. Critical context is worth the tokens.
+**Length**: Be concise but complete. Prefer under 1,200 words; exceed that only when omitting information would prevent correct continuation.

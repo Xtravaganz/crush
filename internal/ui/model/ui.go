@@ -808,9 +808,23 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sendMessageMsg:
 		cmds = append(cmds, m.sendMessage(msg.Content, msg.Attachments...))
 
+	case workflowSkillActivatedMsg:
+		m.activeSkillID = msg.entry.ID
+		m.activeSkillName = msg.entry.Name
+		m.updateLayoutAndSize()
+		if msg.sessionID != "" && (m.session == nil || m.session.ID != msg.sessionID) {
+			cmds = append(cmds, m.loadSession(msg.sessionID))
+		}
+		if !msg.restored {
+			cmds = append(cmds, util.ReportInfo("Active skill: "+msg.entry.Label))
+		}
+
 	case userCommandsLoadedMsg:
 		m.customCommands = msg.Commands
 		m.setCyclableSkills(msg.Skills)
+		if cmd := m.restoreWorkflowSkill(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 		dia := m.dialog.Dialog(dialog.CommandsID)
 		if dia == nil {
 			break

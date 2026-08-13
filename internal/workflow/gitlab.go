@@ -80,6 +80,9 @@ func ImportGitLabIssue(ctx context.Context, projectRoot string, iid int) (Import
 	}
 
 	branch, _ := gitOutput(ctx, projectRoot, "branch", "--show-current")
+	if err := ensureWorkflowContextExcluded(ctx, projectRoot); err != nil {
+		return ImportResult{}, err
+	}
 	contextDir := filepath.Join(projectRoot, filepath.FromSlash(contextDirName))
 	if err := os.MkdirAll(contextDir, 0o755); err != nil {
 		return ImportResult{}, fmt.Errorf("create workflow context directory: %w", err)

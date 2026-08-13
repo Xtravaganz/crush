@@ -796,6 +796,7 @@ func allToolNames() []string {
 		"question",
 		"sourcegraph",
 		"todos",
+		"workflow_update",
 		"view",
 		"write",
 		"list_mcp_resources",
