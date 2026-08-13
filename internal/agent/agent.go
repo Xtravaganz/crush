@@ -46,6 +46,7 @@ import (
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/stringext"
 	"github.com/charmbracelet/crush/internal/version"
+	"github.com/charmbracelet/crush/internal/workflow"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/charmtone"
 )
@@ -167,6 +168,7 @@ type activeCancel struct {
 }
 
 type sessionAgent struct {
+	workingDir         string
 	largeModel         *csync.Value[Model]
 	smallModel         *csync.Value[Model]
 	systemPromptPrefix *csync.Value[string]
@@ -223,6 +225,7 @@ type sessionAgent struct {
 }
 
 type SessionAgentOptions struct {
+	WorkingDir           string
 	LargeModel           Model
 	SmallModel           Model
 	SystemPromptPrefix   string
@@ -241,6 +244,7 @@ func NewSessionAgent(
 	opts SessionAgentOptions,
 ) SessionAgent {
 	return &sessionAgent{
+		workingDir:           opts.WorkingDir,
 		largeModel:           csync.NewValue(opts.LargeModel),
 		smallModel:           csync.NewValue(opts.SmallModel),
 		systemPromptPrefix:   csync.NewValue(opts.SystemPromptPrefix),
@@ -1189,6 +1193,12 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		return nil, err
 	}
 
+	if currentAssistant != nil {
+		if checkpointErr := a.persistWorkflowCheckpoint(call.SessionID, call.Prompt, currentAssistant.Content().String(), "assistant_final"); checkpointErr != nil {
+			slog.Warn("Failed to persist automatic workflow checkpoint", "session_id", call.SessionID, "error", checkpointErr)
+		}
+	}
+
 	if shouldSummarize {
 		a.activeRequests.Del(call.SessionID)
 		if summarizeErr := a.Summarize(genCtx, call.SessionID, call.ProviderOptions, call.OnAuthRefresh); summarizeErr != nil {
@@ -1459,6 +1469,10 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 	_, err = a.sessions.Save(genCtx, currentSession)
 	if err != nil {
 		return err
+	}
+
+	if checkpointErr := a.persistWorkflowCheckpoint(sessionID, "", summaryMessage.Content().String(), "compaction"); checkpointErr != nil {
+		slog.Warn("Failed to persist workflow compaction checkpoint", "session_id", sessionID, "error", checkpointErr)
 	}
 
 	// Release the active request before processing queued messages so that
@@ -2237,10 +2251,85 @@ func (a *sessionAgent) workaroundProviderMediaLimitations(messages []fantasy.Mes
 	return convertedMessages
 }
 
+const (
+	workflowCheckpointRequestRunes = 1200
+	workflowCheckpointSummaryRunes = 6000
+)
+
+func (a *sessionAgent) persistWorkflowCheckpoint(sessionID, request, summary, source string) error {
+	if strings.TrimSpace(a.workingDir) == "" {
+		return nil
+	}
+	if _, ok, err := workflow.WorkerForSession(a.workingDir, sessionID); err != nil {
+		return err
+	} else if !ok {
+		return nil
+	}
+
+	request = workflowCheckpointText(request, workflowCheckpointRequestRunes)
+	summary = workflowCheckpointText(summary, workflowCheckpointSummaryRunes)
+	if request == "" && summary == "" {
+		return nil
+	}
+
+	checkpoint := map[string]any{
+		"source":     source,
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
+		"summary":    summary,
+	}
+	if request != "" {
+		checkpoint["request"] = request
+	}
+	worker, workflowSource, err := workflow.UpdateWorkflowMemory(a.workingDir, sessionID, map[string]any{
+		"checkpoint": checkpoint,
+	})
+	if err != nil {
+		return err
+	}
+	slog.Info("Workflow checkpoint persisted",
+		"session_id", sessionID,
+		"worker", worker,
+		"workflow", workflowSource,
+		"checkpoint_source", source,
+	)
+	return nil
+}
+
+func workflowCheckpointText(text string, maxRunes int) string {
+	text = strings.TrimSpace(text)
+	if text == "" || maxRunes <= 0 {
+		return ""
+	}
+
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	inFence := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			if !inFence {
+				out = append(out, "[code omitted]")
+			}
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		out = append(out, line)
+	}
+	text = strings.TrimSpace(strings.Join(out, "\n"))
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return strings.TrimSpace(string(runes[:maxRunes])) + " …"
+}
+
 // buildSummaryPrompt constructs the prompt text for session summarization.
 func buildSummaryPrompt(todos []session.Todo) string {
 	var sb strings.Builder
-	sb.WriteString("Provide a detailed summary of our conversation above.")
+	sb.WriteString("Provide a concise handoff summary of our conversation above.")
 	if len(todos) > 0 {
 		sb.WriteString("\n\n## Current Todo List\n\n")
 		for _, t := range todos {

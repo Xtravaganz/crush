@@ -59,6 +59,7 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/crush/internal/ui/util"
 	"github.com/charmbracelet/crush/internal/version"
+	"github.com/charmbracelet/crush/internal/workflow"
 	"github.com/charmbracelet/crush/internal/workspace"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/ultraviolet/layout"
@@ -807,9 +808,23 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sendMessageMsg:
 		cmds = append(cmds, m.sendMessage(msg.Content, msg.Attachments...))
 
+	case workflowSkillActivatedMsg:
+		m.activeSkillID = msg.entry.ID
+		m.activeSkillName = msg.entry.Name
+		m.updateLayoutAndSize()
+		if msg.sessionID != "" && (m.session == nil || m.session.ID != msg.sessionID) {
+			cmds = append(cmds, m.loadSession(msg.sessionID))
+		}
+		if !msg.restored {
+			cmds = append(cmds, util.ReportInfo("Active skill: "+msg.entry.Label))
+		}
+
 	case userCommandsLoadedMsg:
 		m.customCommands = msg.Commands
 		m.setCyclableSkills(msg.Skills)
+		if cmd := m.restoreWorkflowSkill(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 		dia := m.dialog.Dialog(dialog.CommandsID)
 		if dia == nil {
 			break
@@ -4067,6 +4082,28 @@ func (m *UI) sendMessageWithActiveSkill(content string, attachments ...message.A
 			MimeType: "text/markdown",
 			Content:  skillContent,
 		})
+
+		parsedSkill, err := skills.ParseContent(skillContent)
+		if err != nil {
+			return util.NewErrorMsg(fmt.Errorf("parse active skill context policy: %w", err))
+		}
+		workerName := parsedSkill.Name
+		if workerName == "" {
+			workerName = skillName
+		}
+		resolved, ok, err := workflow.ResolveActive(m.com.Workspace.WorkingDir(), workerName, parsedSkill.Context)
+		if err != nil {
+			return util.NewErrorMsg(err)
+		}
+		if ok {
+			baseAttachments = append(baseAttachments, message.Attachment{
+				FilePath: resolved.RelativePath,
+				FileName: "workflow-context.yaml",
+				MimeType: "text/yaml",
+				Content:  resolved.Content,
+			})
+		}
+
 		return sendMessageMsg{Content: content, Attachments: baseAttachments}
 	}
 }

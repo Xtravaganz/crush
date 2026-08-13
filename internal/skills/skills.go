@@ -34,6 +34,13 @@ var (
 	latestStatesMu sync.RWMutex
 )
 
+type ContextPolicy struct {
+	Shared    *bool    `yaml:"shared,omitempty" json:"shared,omitempty"`
+	OwnWorker *bool    `yaml:"own-worker,omitempty" json:"own_worker,omitempty"`
+	Include   []string `yaml:"include,omitempty" json:"include,omitempty"`
+	Writable  []string `yaml:"writable,omitempty" json:"writable,omitempty"`
+}
+
 // Skill represents a parsed SKILL.md file.
 type Skill struct {
 	Name                   string            `yaml:"name" json:"name"`
@@ -43,6 +50,7 @@ type Skill struct {
 	License                string            `yaml:"license,omitempty" json:"license,omitempty"`
 	Compatibility          string            `yaml:"compatibility,omitempty" json:"compatibility,omitempty"`
 	Metadata               map[string]string `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	Context                ContextPolicy     `yaml:"context,omitempty" json:"context,omitempty"`
 	Instructions           string            `yaml:"-" json:"instructions"`
 	Path                   string            `yaml:"-" json:"path"`
 	SkillFilePath          string            `yaml:"-" json:"skill_file_path"`

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -25,6 +26,7 @@ type CatalogEntry struct {
 	Label         string     `json:"label"`
 	Source        SourceType `json:"source"`
 	UserInvocable bool       `json:"user_invocable"`
+	WorkflowOrder *int       `json:"workflow_order,omitempty"`
 }
 
 // SkillReadResult holds metadata about a skill returned alongside its
@@ -55,9 +57,25 @@ func Catalog(active []*Skill, skillPaths []string, workingDir string) []CatalogE
 			Label:         label,
 			Source:        source,
 			UserInvocable: skill.UserInvocable,
+			WorkflowOrder: workflowOrder(skill.Metadata),
 		})
 	}
 	return entries
+}
+
+func workflowOrder(metadata map[string]string) *int {
+	if metadata == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(metadata["workflow-order"])
+	if raw == "" {
+		return nil
+	}
+	order, err := strconv.Atoi(raw)
+	if err != nil {
+		return nil
+	}
+	return &order
 }
 
 // FindEffective returns the named skill from the given active skill

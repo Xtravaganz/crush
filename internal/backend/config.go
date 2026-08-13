@@ -211,6 +211,7 @@ func (b *Backend) ListSkills(workspaceID string) ([]proto.SkillInfo, error) {
 			Label:         entry.Label,
 			Source:        string(entry.Source),
 			UserInvocable: entry.UserInvocable,
+			WorkflowOrder: entry.WorkflowOrder,
 		}
 	}
 	return result, nil

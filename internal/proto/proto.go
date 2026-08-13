@@ -92,6 +92,7 @@ type SkillInfo struct {
 	Label         string `json:"label"`
 	Source        string `json:"source"`
 	UserInvocable bool   `json:"user_invocable"`
+	WorkflowOrder *int   `json:"workflow_order,omitempty"`
 }
 
 // ReadSkillRequest is the request body for reading a skill's content.

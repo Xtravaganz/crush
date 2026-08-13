@@ -615,6 +615,7 @@ func (w *ClientWorkspace) ListSkills(ctx context.Context) ([]skills.CatalogEntry
 			Label:         entry.Label,
 			Source:        skills.SourceType(entry.Source),
 			UserInvocable: entry.UserInvocable,
+			WorkflowOrder: entry.WorkflowOrder,
 		}
 	}
 	return result, nil
